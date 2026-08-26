@@ -12,9 +12,9 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import numpy as np
 import io
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import lru_cache
 import re
 from PDFparserFITZ import DoraemonPDFParser
 from Scibert_embeddings import DoraemonProcessor
@@ -52,6 +52,8 @@ class EnhancedPDFVectorStore:
         self.server = None
         self.server_thread = None
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._pdf_cache = OrderedDict()
+        self._pdf_cache_maxsize = 100
         
         logging.basicConfig(
             level=logging.DEBUG if debug else logging.INFO,
@@ -312,23 +314,30 @@ class EnhancedPDFVectorStore:
             self.logger.error(f"Failed to list PDF files: {str(e)}")
             return []
 
-    @lru_cache(maxsize=100)
     def download_pdf(self, file_id: str) -> Optional[bytes]:
-        """Download a PDF file from Google Drive."""
+        """Download a PDF file from Google Drive, with a small bounded LRU cache.
+
+        Uses a manual cache instead of functools.lru_cache: decorating an instance
+        method with lru_cache pins `self` (and everything it owns - model weights,
+        thread pool, server) in memory for the process lifetime via the cache's
+        internal reference, which leaks on a long-lived server object like this one.
+        """
+        if file_id in self._pdf_cache:
+            self._pdf_cache.move_to_end(file_id)
+            return self._pdf_cache[file_id]
         try:
             request = self.drive_service.files().get_media(fileId=file_id)
-            file_content = io.BytesIO()
-            downloader = io.BytesIO()
-            
             response = request.execute()
-            downloader.write(response)
-            file_content.write(downloader.getvalue())
-            file_content.seek(0)
-            
-            content = file_content.getvalue()
+
+            content = response if isinstance(response, bytes) else bytes(response)
             if not content.startswith(b'%PDF'):
                 raise ValueError("Invalid PDF format")
-                
+
+            self._pdf_cache[file_id] = content
+            self._pdf_cache.move_to_end(file_id)
+            if len(self._pdf_cache) > self._pdf_cache_maxsize:
+                self._pdf_cache.popitem(last=False)
+
             self.logger.debug(f"Successfully downloaded file {file_id}")
             return content
         except Exception as e:

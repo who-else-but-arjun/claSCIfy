@@ -43,7 +43,9 @@ class DoraemonConferenceDataset(Dataset):
         
         # Normalize features
         print("\nNormalizing features...")
-        self.features = (self.features - self.features.mean(dim=0)) / (self.features.std(dim=0) + 1e-6)
+        self.feature_mean = self.features.mean(dim=0)
+        self.feature_std = self.features.std(dim=0) + 1e-6
+        self.features = (self.features - self.feature_mean) / self.feature_std
         
     # Return the total number of samples in this dataset
     def __len__(self):
@@ -119,7 +121,7 @@ def conference_model(input_dim, num_classes):
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
     return model, loss_fn, optimizer, scheduler
 
-def train_multiclass_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, label_map, epochs=20, device='cpu'):
+def train_multiclass_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, label_map, norm_stats, epochs=20, device='cpu'):
     model.to(device)
     best_val_loss = float('inf')
     num_classes = len(label_map)
@@ -209,6 +211,9 @@ def train_multiclass_model(model, loss_fn, optimizer, scheduler, train_loader, v
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_val_loss,
                 'metrics': val_metrics,
+                'feature_weights': norm_stats['weights'],
+                'feature_mean': norm_stats['mean'],
+                'feature_std': norm_stats['std'],
             }, 'doraemon_conference_classifier.pt')
         
         scheduler.step(avg_val_loss)
@@ -236,28 +241,35 @@ def prepare_multiclass_data(data_dir, weights_path, label_map, train_split=0.8, 
     print(f"Train set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=4)
-    
-    return train_loader, val_loader, dataset.features.shape[1]
+    # num_workers=0: the whole dataset is already an in-memory tensor, so multiprocess
+    # workers just add IPC/spawn overhead (very pronounced on Windows) with no benefit.
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
+
+    norm_stats = {
+        'weights': dataset.weights,
+        'mean': dataset.feature_mean,
+        'std': dataset.feature_std,
+    }
+    return train_loader, val_loader, dataset.features.shape[1], norm_stats
 
 def main():
     print("\nStarting conference classification training")
-    
+
     data_dir = "Dataset/vectors"
     weights_path = "Dataset/weight2.pt"
     label_map = {0: "CVPR", 1: "TMLR", 2: "KDD", 3: "NEURIPS", 4: "EMNLP"}
     batch_size = 32
     epochs = 10
-    
-    train_loader, val_loader, input_dim = prepare_multiclass_data(data_dir, weights_path, label_map, batch_size=batch_size)
-    
+
+    train_loader, val_loader, input_dim, norm_stats = prepare_multiclass_data(data_dir, weights_path, label_map, batch_size=batch_size)
+
     model, loss_fn, optimizer, scheduler = conference_model(input_dim, len(label_map))
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"\nUsing device: {device}")
-    
-    train_multiclass_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, 
-                          label_map, epochs=epochs, device=device)
+
+    train_multiclass_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader,
+                          label_map, norm_stats, epochs=epochs, device=device)
     
     print("\nTraining completed. Best model saved as 'doraemon_conference_classifier.pt'")
 

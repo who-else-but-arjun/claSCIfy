@@ -1,3 +1,4 @@
+import os
 import requests
 import re
 from typing import List, Optional
@@ -13,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 class APIError(Exception):
     pass
+
+# api-inference.huggingface.co (the old text-generation endpoint) has been decommissioned in
+# favor of HF's Inference Providers router, which speaks the OpenAI chat-completions format.
+# mistralai/Mistral-7B-Instruct-v0.3 has no working provider anymore.
+# Using Llama-3.1-8B-Instruct since it's confirmed already enabled and working on this account.
+HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
+HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
 # Validate that all required input fields have the correct types
 def validate_inputs(abstract: str, conclusion: str, keywords: List[str], conference_name: str) -> bool:
@@ -37,37 +45,36 @@ def clean_generated_text(text: str) -> str:
 def get_word_count(text: str) -> int:
     return len(text.split())
 
-# Send a prompt to the Mistral-7B Instruct API and return the cleaned generated text
-def call_mistral_api(prompt: str, max_length: int = 200, temperature: float = 0.6, max_retries: int = 3, retry_delay: int = 2) -> str:
+# Send a system/user prompt pair to the Mistral-7B Instruct API and return the cleaned generated text
+def call_mistral_api(system_prompt: str, user_prompt: str, max_length: int = 200, temperature: float = 0.6, max_retries: int = 3, retry_delay: int = 2) -> str:
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_length": max_length,
-            "temperature": temperature,
-            "top_p": 0.95,
-            "return_full_text": False,
-            "max_new_tokens": max_length
-        }
+        "model": HF_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+        "top_p": 0.95,
+        "max_tokens": max_length,
     }
 
-    api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
-    headers = {"Authorization": "Bearer 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"}
+    hf_token = os.environ.get("HF_API_TOKEN")
+    if not hf_token:
+        raise APIError("Set the HF_API_TOKEN environment variable with your Hugging Face API token")
+    headers = {"Authorization": f"Bearer {hf_token}"}
 
     # Retry loop with backoff for transient API failures
     for attempt in range(max_retries):
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
             response_data = response.json()
-            
-            if isinstance(response_data, list) and len(response_data) > 0:
-                generated_text = response_data[0].get('generated_text', '')
-            else:
-                generated_text = response_data.get('generated_text', '')
+
+            generated_text = response_data["choices"][0]["message"]["content"]
 
             if not generated_text:
                 raise APIError("Empty response from API")
-                
+
             return clean_generated_text(generated_text)
 
         except requests.exceptions.RequestException as e:
@@ -101,7 +108,7 @@ def generate_initial_justification(
         "Generate a detailed justification of around 100 words."
     )
 
-    return call_mistral_api(f"{system_prompt}\n\n{user_prompt}")
+    return call_mistral_api(system_prompt, user_prompt)
 
 # Condense the initial justification into a concise 50-70 word summary
 def generate_final_justification(initial_justification: str) -> str:
@@ -116,7 +123,7 @@ def generate_final_justification(initial_justification: str) -> str:
         "Create a concise version between 50-70 words."
     )
 
-    return call_mistral_api(f"{system_prompt}\n\n{user_prompt}", max_length=150)
+    return call_mistral_api(system_prompt, user_prompt, max_length=150)
 
 # Two-stage justification pipeline: generate detailed justification then summarize it
 def Doraemon_justification(

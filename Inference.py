@@ -10,7 +10,8 @@ from Binary_classification import DoraemonBinaryClassifier
 from Conference_classification import DoraemonConferenceClassifier
 
 def load_model(model, checkpoint_path, device):
-    """Helper function to load model with correct state dict structure"""
+    """Load model weights and, if present, the training-time feature normalization stats
+    (feature_weights/feature_mean/feature_std) that must be reapplied identically at inference."""
     # Load the checkpoint file onto the specified target device (CPU or CUDA)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     # Verify if the saved checkpoint contains the full model state dictionary
@@ -19,8 +20,31 @@ def load_model(model, checkpoint_path, device):
     else:
         # If the state dictionary is stored directly, load it directly
         model.load_state_dict(checkpoint)
-    return model
-def process_saved_data(input_dir: Path, output_dir: Path):
+
+    norm_stats = None
+    if isinstance(checkpoint, dict) and 'feature_mean' in checkpoint and 'feature_std' in checkpoint:
+        norm_stats = {
+            'weights': checkpoint.get('feature_weights'),
+            'mean': checkpoint['feature_mean'].to(device),
+            'std': checkpoint['feature_std'].to(device),
+        }
+        if norm_stats['weights'] is not None:
+            norm_stats['weights'] = norm_stats['weights'].to(device)
+    return model, norm_stats
+
+def normalize_features(raw_features, norm_stats):
+    """Apply the exact weight-multiply + normalize steps used at training time.
+    Falls back to a warning + no-op if the checkpoint predates saved normalization stats."""
+    if norm_stats is None:
+        print("[WARNING] Checkpoint has no saved normalization stats - using raw features. "
+              "Retrain with the current Binary_classification.py/Conference_classification.py to fix this.")
+        return raw_features
+    features = raw_features
+    if norm_stats['weights'] is not None:
+        features = features * norm_stats['weights']
+    return (features - norm_stats['mean']) / norm_stats['std']
+
+def process_saved_data(input_dir: Path, output_dir: Path, conference_confidence_threshold: float = 0.4):
     print("[INFO] Initializing processing of saved data...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -46,10 +70,10 @@ def process_saved_data(input_dir: Path, output_dir: Path):
     try:
         binary_classifier = DoraemonBinaryClassifier(input_dim=input_dim).to(device)
         conference_classifier = DoraemonConferenceClassifier(input_dim=input_dim, num_classes=5).to(device)
-        
-        binary_classifier = load_model(binary_classifier, "doraemon_binary_classifier.pt", device)
-        conference_classifier = load_model(conference_classifier, "doraemon_conference_classifier.pt", device)
-        
+
+        binary_classifier, binary_norm_stats = load_model(binary_classifier, "doraemon_binary_classifier.pt", device)
+        conference_classifier, conference_norm_stats = load_model(conference_classifier, "doraemon_conference_classifier.pt", device)
+
         binary_classifier.eval()
         conference_classifier.eval()
     except Exception as e:
@@ -69,11 +93,6 @@ def process_saved_data(input_dir: Path, output_dir: Path):
         except Exception as e:
             print(f"[WARNING] Error loading vector {vector_file}: {str(e)}")
             continue
-
-    print("[INFO] Computing normalization statistics...")
-    all_features = torch.stack(features_list)
-    feature_mean = all_features.mean(dim=0)
-    feature_std = all_features.std(dim=0) + 1e-6
 
     print("[INFO] Processing with normalized features...")
     results = []
@@ -107,26 +126,33 @@ def process_saved_data(input_dir: Path, output_dir: Path):
                         conclusion = content
                         break
 
-            normalized_features = (features_list[idx] - feature_mean) / feature_std
-            
+            raw_features = features_list[idx]
+
             with torch.no_grad():
-                binary_pred = binary_classifier(normalized_features.unsqueeze(0).to(device))
+                binary_input = normalize_features(raw_features, binary_norm_stats).unsqueeze(0).to(device)
+                binary_pred = binary_classifier(binary_input)
                 is_publishable = binary_pred.item() > 0.5
-                
+
                 conference = "na"
                 justification = "na"
-                
+
                 if is_publishable:
-                    conf_pred = conference_classifier(normalized_features.unsqueeze(0).to(device))
-                    conference_id = torch.argmax(conf_pred).item()
-                    conference = label_map[conference_id]
-                    
-                    justification = Doraemon_justification(
-                        abstract=abstract,
-                        conclusion=conclusion,
-                        keywords=keywords,
-                        conference_name=conference
-                    )
+                    conference_input = normalize_features(raw_features, conference_norm_stats).unsqueeze(0).to(device)
+                    conf_logits = conference_classifier(conference_input)
+                    conf_probs = torch.softmax(conf_logits, dim=1)
+                    conference_id = torch.argmax(conf_probs, dim=1).item()
+                    conference_prob = conf_probs[0][conference_id].item()
+
+                    if conference_prob > conference_confidence_threshold:
+                        conference = label_map[conference_id]
+                        justification = Doraemon_justification(
+                            abstract=abstract,
+                            conclusion=conclusion,
+                            keywords=keywords,
+                            conference_name=conference
+                        )
+                    else:
+                        conference = "uncertain"
             
             results.append([file_id, int(is_publishable), conference, justification])
             

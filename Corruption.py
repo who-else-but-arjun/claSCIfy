@@ -1,12 +1,22 @@
 import json
+import os
 import random
 import requests
 from pathlib import Path
 
 class TextCorruptor:
+    # api-inference.huggingface.co (the old text-generation endpoint this used to call) has been
+    # decommissioned in favor of HF's Inference Providers router, which speaks the OpenAI
+    # chat-completions format. mistralai/Mistral-7B-Instruct-v0.3 has no working provider anymore.
+    # Using Llama-3.1-8B-Instruct since it's confirmed already enabled and working on this account.
+    HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+
     def __init__(self):
-        self.api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
-        self.headers = {"Authorization": "Bearer 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"}
+        self.api_url = "https://router.huggingface.co/v1/chat/completions"
+        hf_token = os.environ.get("HF_API_TOKEN")
+        if not hf_token:
+            raise RuntimeError("Set the HF_API_TOKEN environment variable with your Hugging Face API token")
+        self.headers = {"Authorization": f"Bearer {hf_token}"}
         self._test_api_connection()
         self.fallback_phrases = [
             "potato dreams fly upward", "singing mountains eat clouds",
@@ -15,7 +25,8 @@ class TextCorruptor:
 
     def _test_api_connection(self):
         try:
-            response = requests.post(self.api_url, headers=self.headers, json={"inputs": "test"})
+            payload = {"model": self.HF_MODEL, "messages": [{"role": "user", "content": "test"}], "max_tokens": 5}
+            response = requests.post(self.api_url, headers=self.headers, json=payload)
             response.raise_for_status()
         except Exception as e:
             print(f"API connection failed: {e}")
@@ -82,13 +93,20 @@ class TextCorruptor:
     def generate_nonsense(self):
         try:
             payload = {
-                "inputs": "Generate a nonsensical phrase. it should be completely random and should be atleast 5 - 20 words",
-                "parameters": {"max_length": 50, "temperature": 0.9}
+                "model": self.HF_MODEL,
+                "messages": [{
+                    "role": "user",
+                    "content": "Generate a nonsensical phrase. it should be completely random and should be atleast 5 - 20 words"
+                }],
+                "max_tokens": 50,
+                "temperature": 0.9
             }
-            response = requests.post(self.api_url, headers=self.headers, json=payload)
-            text = response.json()[0]["generated_text"].split(":")[-1].strip('"\'').strip()
-            return text if text and len(text.split()) <= 5 else random.choice(self.fallback_phrases)
-        except:
+            response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=30)
+            response.raise_for_status()
+            text = response.json()["choices"][0]["message"]["content"].split(":")[-1].strip('"\'').strip()
+            word_count = len(text.split())
+            return text if text and 5 <= word_count <= 20 else random.choice(self.fallback_phrases)
+        except Exception:
             return random.choice(self.fallback_phrases)
 
     def add_nonsense(self, section):

@@ -52,7 +52,9 @@ class DoraemonDataset(Dataset):
         
         # Normalize features
         print("\nNormalizing features...")
-        self.features = (self.features - self.features.mean(dim=0)) / self.features.std(dim=0)
+        self.feature_mean = self.features.mean(dim=0)
+        self.feature_std = self.features.std(dim=0) + 1e-6
+        self.features = (self.features - self.feature_mean) / self.feature_std
         
     def __len__(self):
         # Return the total number of samples in this dataset
@@ -125,7 +127,7 @@ def create_model(input_dim):
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
     return model, loss_fn, optimizer, scheduler
 
-def train_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, epochs=20, device='cpu'):
+def train_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, norm_stats, epochs=20, device='cpu'):
     model.to(device)
     best_val_loss = float('inf')
     
@@ -216,6 +218,9 @@ def train_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, 
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_val_loss,
                 'metrics': val_metrics,
+                'feature_weights': norm_stats['weights'],
+                'feature_mean': norm_stats['mean'],
+                'feature_std': norm_stats['std'],
             }, 'doraemon_binary_classifier.pt')
         
         scheduler.step(avg_val_loss)
@@ -239,26 +244,33 @@ def prepare_data(data_dir, weights_path, train_split=0.8, batch_size=32):
     print(f"Train set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=4)
-    
-    return train_loader, val_loader, dataset.features.shape[1]
+    # num_workers=0: the whole dataset is already an in-memory tensor, so multiprocess
+    # workers just add IPC/spawn overhead (very pronounced on Windows) with no benefit.
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=0)
+
+    norm_stats = {
+        'weights': dataset.weights,
+        'mean': dataset.feature_mean,
+        'std': dataset.feature_std,
+    }
+    return train_loader, val_loader, dataset.features.shape[1], norm_stats
 
 def main():
     print("\nStarting binary classification training")
-    
+
     data_dir = "Dataset/vectors"
     weights_path = "Dataset/weight1.pt"
     batch_size = 32
     epochs = 10
-    
-    train_loader, val_loader, input_dim = prepare_data(data_dir, weights_path, batch_size=batch_size)
-    
+
+    train_loader, val_loader, input_dim, norm_stats = prepare_data(data_dir, weights_path, batch_size=batch_size)
+
     model, loss_fn, optimizer, scheduler = create_model(input_dim)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"\nUsing device: {device}")
-    
-    train_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, 
+
+    train_model(model, loss_fn, optimizer, scheduler, train_loader, val_loader, norm_stats,
                 epochs=epochs, device=device)
     
     print("\nTraining completed. Best model saved as 'doraemon_binary_classifier.pt'")
