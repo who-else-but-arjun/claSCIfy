@@ -1,21 +1,20 @@
 # Web/Data Handling
-requests==2.34.2
-PyMuPDF==1.28.2
-pandas==2.2.3
-streamlit==1.62.0
-tqdm==4.67.1
-plotly==6.9.0
+requests
+PyMuPDF
+pandas
+streamlit
+tqdm
+plotly
 
 # Machine Learning and NLP
-torch==2.5.1
-transformers==4.47.1
-scikit-learn==1.6.0
-textstat==0.7.13
+torch
+transformers
+scikit-learn
+textstat
 
 # Google API
-google-auth==2.57.0
-google-api-python-client==2.199.0
+google-auth
+google-api-python-client
 
-# Pathway (version string reported by this environment's pip install looked malformed
-# ("0.post1") - pin this once you've verified a real release version works for you)
+# Pathway
 pathway

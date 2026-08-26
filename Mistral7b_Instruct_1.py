@@ -1,4 +1,3 @@
-import os
 import requests
 import re
 from typing import List, Optional
@@ -14,13 +13,6 @@ logger = logging.getLogger(__name__)
 
 class APIError(Exception):
     pass
-
-# api-inference.huggingface.co (the old text-generation endpoint) has been decommissioned in
-# favor of HF's Inference Providers router, which speaks the OpenAI chat-completions format.
-# mistralai/Mistral-7B-Instruct-v0.3 has no working provider anymore.
-# Using Llama-3.1-8B-Instruct since it's confirmed already enabled and working on this account.
-HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
-HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
 # Validate that all input parameters have the correct types before API call
 def validate_inputs(abstract: str, conclusion: str, keywords: List[str], conference_name: str) -> bool:
@@ -79,29 +71,31 @@ def Doraemon_justification(
 
         # Construct the API request payload with generation hyperparameters
         payload = {
-            "model": HF_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.6,
-            "top_p": 0.95,
-            "max_tokens": 150,
+            "inputs": f"{system_prompt}\n\n{user_prompt}",
+            "parameters": {
+                "max_length": 150,
+                "temperature": 0.6, 
+                "top_p": 0.95,
+                "return_full_text": False,
+                "max_new_tokens": 150  
+            }
         }
 
-        hf_token = os.environ.get("HF_API_TOKEN")
-        if not hf_token:
-            raise APIError("Set the HF_API_TOKEN environment variable with your Hugging Face API token")
-        headers = {"Authorization": f"Bearer {hf_token}"}
+        api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
+        headers = {"Authorization": "Bearer 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"}
 
         # Retry loop with exponential backoff for robustness against transient API failures
         for attempt in range(max_retries):
             try:
-                response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
+                response = requests.post(api_url, headers=headers, json=payload, timeout=30)
                 response.raise_for_status()
                 response_data = response.json()
-
-                generated_text = response_data["choices"][0]["message"]["content"]
+                
+                # Improved response handling
+                if isinstance(response_data, list) and len(response_data) > 0:
+                    generated_text = response_data[0].get('generated_text', '')
+                else:
+                    generated_text = response_data.get('generated_text', '')
 
                 if not generated_text:
                     raise APIError("Empty response from API")

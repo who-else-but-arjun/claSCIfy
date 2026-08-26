@@ -2,7 +2,6 @@ import pandas as pd
 import streamlit as st
 import torch
 import os
-import html
 from pathlib import Path
 import json
 import tempfile
@@ -17,7 +16,6 @@ from Scibert_embeddings import DoraemonProcessor
 from Binary_classification import DoraemonBinaryClassifier
 from Conference_classification import DoraemonConferenceClassifier
 from Mistral7b_Instruct_1 import Doraemon_justification
-from Inference import normalize_features
 
 def load_css():
     """Load enhanced custom CSS styles"""
@@ -160,8 +158,8 @@ class ResearchPaperAnalyzer:
         self.binary_classifier = DoraemonBinaryClassifier(input_dim=input_dim).to(self.device)
         self.conference_classifier = DoraemonConferenceClassifier(input_dim=input_dim, num_classes=5).to(self.device)
         
-        self.binary_norm_stats = self.load_model(self.binary_classifier, "doraemon_binary_classifier.pt")
-        self.conference_norm_stats = self.load_model(self.conference_classifier, "doraemon_conference_classifier.pt")
+        self.load_model(self.binary_classifier, "doraemon_binary_classifier.pt")
+        self.load_model(self.conference_classifier, "doraemon_conference_classifier.pt")
         
         self.binary_classifier.eval()
         self.conference_classifier.eval()
@@ -172,26 +170,13 @@ class ResearchPaperAnalyzer:
         }
 
     def load_model(self, model, checkpoint_path):
-        """Load model weights and training-time feature normalization stats with error handling"""
+        """Load model weights with error handling"""
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
             if 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
             else:
                 model.load_state_dict(checkpoint)
-
-            norm_stats = None
-            if isinstance(checkpoint, dict) and 'feature_mean' in checkpoint and 'feature_std' in checkpoint:
-                norm_stats = {
-                    'weights': checkpoint.get('feature_weights'),
-                    'mean': checkpoint['feature_mean'].to(self.device),
-                    'std': checkpoint['feature_std'].to(self.device),
-                }
-                if norm_stats['weights'] is not None:
-                    norm_stats['weights'] = norm_stats['weights'].to(self.device)
-            else:
-                st.warning(f"{checkpoint_path} has no saved normalization stats - predictions may be unreliable until retrained.")
-            return norm_stats
         except Exception as e:
             st.error(f"Error loading model from {checkpoint_path}: {str(e)}")
             raise
@@ -232,42 +217,32 @@ class ResearchPaperAnalyzer:
                 update_progress(60, "🤖 Running classification models...")
                 
                 with torch.no_grad():
-                    binary_input = normalize_features(combined_features, self.binary_norm_stats)
-                    # DoraemonBinaryClassifier's own forward already ends in nn.Sigmoid(),
-                    # so its output is already a probability - do not apply sigmoid again here.
-                    binary_prob = self.binary_classifier(binary_input.unsqueeze(0)).item()
+                    binary_logits = self.binary_classifier(combined_features.unsqueeze(0))
+                    binary_prob = torch.sigmoid(binary_logits).item()
                     is_publishable = binary_prob > 0.5
-
+                    
                     conference_pred = None
                     conference_name = None
                     justification = None
                     conference_prob = None
-
+                    
                     if is_publishable:
                         update_progress(80, "🎯 Determining target conference...")
-                        conference_input = normalize_features(combined_features, self.conference_norm_stats)
-                        conference_logits = self.conference_classifier(conference_input.unsqueeze(0))
+                        conference_logits = self.conference_classifier(combined_features.unsqueeze(0))
                         conference_probs = torch.softmax(conference_logits, dim=1)
                         conference_id = torch.argmax(conference_probs).item()
                         conference_prob = conference_probs[0][conference_id].item()
                         
                         if conference_prob > 0.4:
                             conference_name = self.conference_map[conference_id]
-
+                            
                             update_progress(90, "📝 Generating justification...")
-                            # A failure here (e.g. LLM API quota/outage) shouldn't discard the
-                            # classification results already computed above - keep those and
-                            # just surface the justification as unavailable.
-                            try:
-                                justification = Doraemon_justification(
-                                    abstract=abstract,
-                                    conclusion=conclusion,
-                                    keywords=[k[0] for k in keywords],
-                                    conference_name=conference_name
-                                )
-                            except Exception as e:
-                                st.warning(f"Justification generation failed ({str(e)}); showing classification results without it.")
-                                justification = None
+                            justification = Doraemon_justification(
+                                abstract=abstract,
+                                conclusion=conclusion,
+                                keywords=[k[0] for k in keywords],
+                                conference_name=conference_name
+                            )
                 
                 update_progress(100, "✅ Analysis complete!")
                 
@@ -399,11 +374,11 @@ def main():
                         st.markdown(
                             f"""
                             <div class="card">
-                                <h3>🎯 Recommended Venue: {html.escape(results['conference'])}</h3>
+                                <h3>🎯 Recommended Venue: {results['conference']}</h3>
                                 <p>Confidence: {results['conference_prob']:.1%}</p>
                                 <hr>
                                 <h4>📝 Submission Rationale:</h4>
-                                {html.escape(results['justification'] or '')}
+                                {results['justification']}
                             </div>
                             """,
                             unsafe_allow_html=True
@@ -428,7 +403,7 @@ def main():
             
             with col2:
                 st.markdown("### 🏷️ Key Topics")
-                keywords_html = " ".join(f"<span class='keyword-tag'>{html.escape(keyword)}</span>" for keyword in results['keywords'])
+                keywords_html = " ".join(f"<span class='keyword-tag'>{keyword}</span>" for keyword in results['keywords'])
                 st.markdown(keywords_html, unsafe_allow_html=True)
             # Export options
             st.markdown("## 📥 Export Analysis")
