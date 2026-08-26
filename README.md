@@ -54,6 +54,14 @@ This repository contains a comprehensive pipeline for processing PDF documents, 
    ```bash
    pip install -r requirements.txt
    ```
+4. **Set up required credentials:**
+   - Create a Hugging Face access token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (needed by `Corruption.py`, `Mistral7b_Instruct_1.py`, `Mistral7b_Instruct_2.py`, and `Dashboard.py` for LLM-generated justifications), then set it as an environment variable:
+     ```bash
+     export HF_API_TOKEN="hf_your_token_here"        # macOS/Linux
+     $env:HF_API_TOKEN = "hf_your_token_here"         # Windows PowerShell
+     ```
+     Your Hugging Face account also needs at least one [Inference Provider enabled](https://huggingface.co/settings/inference-providers) or LLM calls will fail with a 402 error.
+   - **Only if using `Pathway_inference.py`:** obtain a Google Cloud service-account key (JSON) with read access to the target Drive folder, and save it as `credentials.json` in the project root (see `credentials.json.example` for the expected format). This file is gitignored — never commit it.
 
 ### 2. Preprocessing
 1. **Place PDFs in the appropriate directory:**
@@ -108,7 +116,7 @@ This repository contains a comprehensive pipeline for processing PDF documents, 
      python Mistral7b_Instruct_2.py
      ```
 2. **Pathway Inference:**
-   - Implement pathway connector and vector store service:
+   - Implement pathway connector and vector store service (requires `credentials.json` in the project root — see Setup step 4):
      ```bash
      python Pathway_inference.py
      ```
@@ -127,7 +135,7 @@ This repository contains a comprehensive pipeline for processing PDF documents, 
 - **Dashboard.py**: Deploys a Streamlit dashboard for quick PDF inference.
 - **FULL_CODE.ipynb**: Contains the full pipeline code in a Jupyter notebook format.
 - **Inference.py**: Runs inference on the sample data and saves the results.
-- **Mistral7b_Instruct_1.py & Mistral7b_Instruct_2.py**: Different approaches for generating justifications using Mistral.
+- **Mistral7b_Instruct_1.py & Mistral7b_Instruct_2.py**: Different approaches for generating justifications using an instruction-tuned LLM (`meta-llama/Llama-3.1-8B-Instruct`) via Hugging Face's Inference Providers router. Requires `HF_API_TOKEN` to be set.
 - **PDFparserFITZ.py**: Parses PDFs into JSON format.
 - **Pathway_inference.py**: Integrates pathway features like gdrive connector and vector store server to fetch PDFs, and processes them.
 - **Scibert_embeddings.py**: Creates feature vectors using SciBERT embeddings.
@@ -140,4 +148,6 @@ This repository contains a comprehensive pipeline for processing PDF documents, 
   ```
 - Verify that all necessary files are placed in their respective directories.
 - Check log outputs for specific errors during execution.
+- **`402 Client Error: Payment Required` from Hugging Face:** either `HF_API_TOKEN` isn't set, your Hugging Face account has no [Inference Provider enabled](https://huggingface.co/settings/inference-providers), or your account's inference credits/quota are exhausted (check [huggingface.co/settings/billing](https://huggingface.co/settings/billing)).
+- **`FileNotFoundError` for `credentials.json`:** only needed for `Pathway_inference.py`; every other script (`Inference.py`, `Dashboard.py`, training scripts) runs without it.
 
